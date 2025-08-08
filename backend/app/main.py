@@ -1,4 +1,3 @@
-# backend/app/main.py
 from fastapi import FastAPI, HTTPException, Request, Query, Response
 from pydantic import BaseModel
 import os
@@ -7,6 +6,7 @@ import httpx
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
+from starlette.responses import StreamingResponse
 
 # MODEL_MAP может быть либо в constants/models.py, либо в models.py
 try:
@@ -16,15 +16,23 @@ except Exception:
 
 from stream_generator import stream_generator
 
+load_dotenv()
+
 app = FastAPI()
 
-load_dotenv()
+# ===== OpenAI (ассистент) =====
 openai.api_key = os.getenv("OPENAI_API_KEY", "")
 async_client = openai.AsyncOpenAI()
 
-# --- Anam ---
-ANAM_BASE = "https://api.anam.ai"
+# ===== Anam =====
+ANAM_BASE = os.getenv("ANAM_BASE", "https://api.anam.ai")
 ANAM_API_KEY = os.getenv("ANAM_API_KEY", "")
+
+# Hop-by-hop заголовки не проксируем
+HOP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,20 +50,22 @@ app.add_middleware(
 class PromptRequest(BaseModel):
     prompt: str
 
+
 # ========== OpenAI SSE ==========
-@app.get("/api/generate-assistant-response")  # Важно: без завершающего /
+@app.get("/api/generate-assistant-response")  # важно: без завершающего /
 async def generate_assistant_response(
     req: Request,
     prompt: str = Query(...),
     model: str = Query(...),
 ):
+    # Жёсткая проверка Referer — как в твоей прошлой рабочей версии
     referer = req.headers.get("referer", "")
     if (not referer or not referer.startswith("https://psychology-machines.ru/")) and not referer.startswith(
         "http://localhost:5173"
     ):
         raise HTTPException(status_code=403, detail="Invalid Referer")
 
-    # новая ветка диалога
+    # новая ветка
     thread = await async_client.beta.threads.create()
 
     # сообщение пользователя
@@ -65,7 +75,7 @@ async def generate_assistant_response(
         role="user",
     )
 
-    # стрим ответа ассистента — как в твоей прошлой рабочей версии
+    # стрим ассистента (как было раньше)
     stream = async_client.beta.threads.runs.stream(
         thread_id=thread.id,
         assistant_id=MODEL_MAP[model],
@@ -82,13 +92,10 @@ async def generate_assistant_response(
         },
     )
 
-# ========== Anam: только session-token ==========
+
+# ========== Anam: только session-token (ключ не светим) ==========
 @app.post("/anam/api/v1/auth/session-token")
 async def anam_session_token(req: Request):
-    """
-    Проксируем выдачу session-token в Anam, чтобы ключ не светился в браузере.
-    Фронт бьёт сюда: /anam/api/v1/auth/session-token
-    """
     if not ANAM_API_KEY:
         raise HTTPException(status_code=500, detail="ANAM_API_KEY is not set")
 
@@ -105,9 +112,47 @@ async def anam_session_token(req: Request):
     timeout = httpx.Timeout(30.0, connect=5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(f"{ANAM_BASE}/v1/auth/session-token", json=payload, headers=headers)
-        # Пробрасываем ответ как есть (код + content-type)
         return Response(
             content=r.content,
             status_code=r.status_code,
             media_type=r.headers.get("content-type", "application/json"),
         )
+
+
+# ========== Anam: общий прокси для /anam/api/* ==========
+# Нужен для вызовов SDK: /v1/metrics/client, /v1/engine/session, и т.д.
+@app.api_route("/anam/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def anam_proxy(path: str, request: Request):
+    # Спец-роут /v1/auth/session-token перехвачен выше, сюда попадут все остальные
+    url = f"{ANAM_BASE}/{path}"
+    method = request.method
+
+    # Проксируем заголовки (без hop-by-hop)
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS}
+
+    # Тело запроса
+    body = await request.body()
+
+    # Время ожидания: длинный read для SSE/долгих ответов
+    timeout = httpx.Timeout(connect=10.0, read=600.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            # stream-режим: корректно прокидываем и JSON, и SSE
+            async with client.stream(method, url, params=request.query_params, headers=fwd_headers, content=body) as r:
+                resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS}
+                media = r.headers.get("content-type", None)
+
+                # SSE — отключаем буферизацию
+                if media and "text/event-stream" in media:
+                    resp_headers["X-Accel-Buffering"] = "no"
+                    resp_headers["Cache-Control"] = "no-cache"
+                    resp_headers["Connection"] = "keep-alive"
+
+                return StreamingResponse(
+                    r.aiter_bytes(),
+                    status_code=r.status_code,
+                    media_type=media,
+                    headers=resp_headers,
+                )
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
