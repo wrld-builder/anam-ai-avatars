@@ -394,10 +394,35 @@ function selectChat(name: string) {
 /* ==============================
    Wire UI
    ============================== */
-document.getElementById('burgerMenu')?.addEventListener('click', (e) => {
-  e.preventDefault(); e.stopPropagation()
-  document.getElementById('sidebar')?.classList.toggle('visible')
-})
+// --- burger toggle ---
+const burger = document.getElementById('burgerMenu') as HTMLElement | null
+const sidebar = document.getElementById('sidebar') as HTMLElement | null
+
+function onBurgerToggle(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  sidebar?.classList.toggle('visible')
+}
+
+// Снимаем возможно привязанные ранние обработчики (если были)
+const clone = burger?.cloneNode(true) as HTMLElement | null
+if (burger && clone && burger.parentNode) {
+  burger.parentNode.replaceChild(clone, burger)
+}
+
+// Вешаем надёжные события
+const target = document.getElementById('burgerMenu') as HTMLElement | null
+if (target) {
+  // tap/клик
+  target.addEventListener('click', onBurgerToggle, { passive: false })
+  target.addEventListener('pointerup', onBurgerToggle, { passive: false })
+  target.addEventListener('touchend', onBurgerToggle, { passive: false })
+  // доступность: Enter/Space
+  target.addEventListener('keydown', (ev: KeyboardEvent) => {
+    if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
+  })
+}
+
 
 el.persona.addEventListener('change', async () => {
   // только меняем выбранную персону, НО НЕ ЗАПУСКАЕМ СЕССИЮ
