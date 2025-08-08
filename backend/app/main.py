@@ -1,3 +1,4 @@
+# backend/app/main.py
 from fastapi import FastAPI, HTTPException, Request, Query, Response
 from pydantic import BaseModel
 import os
@@ -93,7 +94,7 @@ async def generate_assistant_response(
     )
 
 
-# ========== Anam: только session-token (ключ не светим) ==========
+# ========== Anam: только session-token ==========
 @app.post("/anam/api/v1/auth/session-token")
 async def anam_session_token(req: Request):
     if not ANAM_API_KEY:
@@ -109,7 +110,8 @@ async def anam_session_token(req: Request):
         "Content-Type": "application/json",
     }
 
-    timeout = httpx.Timeout(30.0, connect=5.0)
+    # ❗ httpx.Timeout: указываем все четыре
+    timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(f"{ANAM_BASE}/v1/auth/session-token", json=payload, headers=headers)
         return Response(
@@ -133,8 +135,9 @@ async def anam_proxy(path: str, request: Request):
     # Тело запроса
     body = await request.body()
 
-    # Время ожидания: длинный read для SSE/долгих ответов
-    timeout = httpx.Timeout(connect=10.0, read=600.0)
+    # ❗ httpx.Timeout: указываем все четыре (длинный read для SSE)
+    timeout = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             # stream-режим: корректно прокидываем и JSON, и SSE
