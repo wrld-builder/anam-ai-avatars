@@ -1,4 +1,3 @@
-# backend/app/main.py
 from fastapi import FastAPI, HTTPException, Request, Query, Response
 from pydantic import BaseModel
 import os
@@ -36,6 +35,22 @@ HOP_HEADERS = {
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
 }
 
+# ==== Глобальный httpx-клиент (keep-alive + HTTP/2) для прокси Anam ====
+@app.on_event("startup")
+async def _startup():
+    app.state.httpx_client = httpx.AsyncClient(
+        http2=True,
+        timeout=httpx.Timeout(connect=5.0, read=600.0, write=600.0, pool=5.0),
+        headers={"Accept-Encoding": "identity"},
+    )
+
+@app.on_event("shutdown")
+async def _shutdown():
+    try:
+        await app.state.httpx_client.aclose()
+    except Exception:
+        pass
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -53,42 +68,56 @@ class PromptRequest(BaseModel):
     prompt: str
 
 
-# ========== OpenAI SSE ==========
+# ========== OpenAI SSE (File Search ВСЕГДА, thread_id реюз) ==========
 @app.get("/api/generate-assistant-response")  # важно: без завершающего /
 async def generate_assistant_response(
     req: Request,
     prompt: str = Query(...),
     model: str = Query(...),
+    thread_id: str | None = Query(None),
 ):
-    # Жёсткая проверка Referer — как в твоей прошлой рабочей версии
+    # Проверка Referer — как в твоей рабочей версии
     referer = req.headers.get("referer", "")
     if (not referer or not referer.startswith("https://psychology-machines.ru/")) and not referer.startswith(
         "http://localhost:5173"
     ):
         raise HTTPException(status_code=403, detail="Invalid Referer")
 
-    # новая ветка
-    thread = await async_client.beta.threads.create()
+    # тред: реюз если пришёл, иначе создаём
+    if thread_id:
+        t_id = thread_id
+    else:
+        thread = await async_client.beta.threads.create()
+        t_id = thread.id
 
     # сообщение пользователя
     await async_client.beta.threads.messages.create(
-        thread_id=thread.id,
+        thread_id=t_id,
         content=prompt,
         role="user",
     )
 
-    # стрим ассистента (как было раньше)
+    # стрим ассистента — File Search ВСЕГДА «присутствует»
     stream = async_client.beta.threads.runs.stream(
-        thread_id=thread.id,
+        thread_id=t_id,
         assistant_id=MODEL_MAP[model],
-        tool_choice={"type": "file_search"},
+        tool_choice={"type": "file_search"},   # ← фиксировано
     )
 
+    # Объединённый генератор: сперва отправляем THREAD_ID, потом текст
+    async def combined_stream():
+        # Первый чанк с thread_id — фронт сохранит и НЕ озвучит
+        yield f"__THREAD_ID__:{t_id}"
+        async for chunk in stream_generator(stream):
+            yield chunk
+
     return EventSourceResponse(
-        stream_generator(stream),
+        combined_stream(),
         media_type="text/event-stream",
         headers={
-            "x-thread-id": thread.id,
+            # Не рассчитываем на headers в EventSource (браузер их не даст),
+            # но оставим для отладки
+            "x-thread-id": t_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         },
@@ -109,27 +138,26 @@ async def anam_session_token(req: Request):
     headers = {
         "Authorization": f"Bearer {ANAM_API_KEY}",
         "Content-Type": "application/json",
-        "Accept-Encoding": "identity",  # без gzip — стабильнее для прокси
     }
 
-    timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(f"{ANAM_BASE}/v1/auth/session-token", json=payload, headers=headers)
-        return Response(
-            content=r.content,
-            status_code=r.status_code,
-            media_type=r.headers.get("content-type", "application/json"),
-        )
+    client: httpx.AsyncClient = app.state.httpx_client
+    r = await client.post(f"{ANAM_BASE}/v1/auth/session-token", json=payload, headers=headers)
+    return Response(
+        content=r.content,
+        status_code=r.status_code,
+        media_type=r.headers.get("content-type", "application/json"),
+    )
 
 
 # ========== Anam: общий прокси для /anam/api/* ==========
 @app.api_route("/anam/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def anam_proxy(path: str, request: Request):
     """
-    Прокси со стабильным стримингом:
-    - OPTIONS отдаём 204, чтобы CORS-preflight не шёл в апстрим.
-    - Для остальных методов: client.send(..., stream=True) и асинхр. генератор.
-    - Ловим httpx.ReadError / asyncio.CancelledError и завершаем спокойно.
+    Стабильный и быстрый стриминг-прокси:
+    - OPTIONS → 204 (CORS preflight не идёт в апстрим)
+    - client.send(..., stream=True) + асинхр. генератор
+    - ловим ReadError/CancelledError и завершаем мягко
+    - HTTP/2 + keep-alive + identity (без gzip) для минимальной задержки
     """
     if request.method == "OPTIONS":
         return Response(status_code=204)
@@ -139,50 +167,44 @@ async def anam_proxy(path: str, request: Request):
 
     # Проксируем заголовки (без hop-by-hop)
     fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS}
-    # Стабильнее без gzip
+    # без gzip — меньше проблем со стримом
     fwd_headers["Accept-Encoding"] = "identity"
 
     # Тело запроса
     body = await request.body()
 
-    # Таймауты: длинный read для SSE/долгих ответов
-    timeout = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
+    client: httpx.AsyncClient = app.state.httpx_client
+    try:
+        req_up = client.build_request(
+            method, url, params=request.query_params, headers=fwd_headers, content=body
+        )
+        r = await client.send(req_up, stream=True)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            req_up = client.build_request(
-                method, url, params=request.query_params, headers=fwd_headers, content=body
-            )
-            r = await client.send(req_up, stream=True)
+        media = r.headers.get("content-type") or "application/octet-stream"
+        resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS}
 
-            media = r.headers.get("content-type") or "application/octet-stream"
-            resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS}
+        # SSE — отключаем буферизацию
+        if "text/event-stream" in media:
+            resp_headers["X-Accel-Buffering"] = "no"
+            resp_headers["Cache-Control"] = "no-cache"
+            resp_headers["Connection"] = "keep-alive"
 
-            # SSE — отключаем буферизацию
-            if "text/event-stream" in media:
-                resp_headers["X-Accel-Buffering"] = "no"
-                resp_headers["Cache-Control"] = "no-cache"
-                resp_headers["Connection"] = "keep-alive"
+        async def iter_response():
+            try:
+                async for chunk in r.aiter_bytes():
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("utf-8", "ignore")
+                    yield chunk
+            except (httpx.ReadError, asyncio.CancelledError):
+                return
+            finally:
+                await r.aclose()
 
-            async def iter_response():
-                try:
-                    async for chunk in r.aiter_bytes():
-                        # безопасность: гарантируем bytes
-                        if isinstance(chunk, str):
-                            chunk = chunk.encode("utf-8", "ignore")
-                        yield chunk
-                except (httpx.ReadError, asyncio.CancelledError):
-                    # апстрим закрылся — тихо выходим
-                    return
-                finally:
-                    # очень важно корректно закрыть поток
-                    await r.aclose()
-
-            return StreamingResponse(
-                iter_response(),
-                status_code=r.status_code,
-                media_type=media,
-                headers=resp_headers,
-            )
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
+        return StreamingResponse(
+            iter_response(),
+            status_code=r.status_code,
+            media_type=media,
+            headers=resp_headers,
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
