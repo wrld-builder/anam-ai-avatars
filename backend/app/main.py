@@ -1,4 +1,3 @@
-# backend/app/main.py
 from fastapi import FastAPI, HTTPException, Request, Query, Response
 from pydantic import BaseModel
 import os
@@ -110,7 +109,7 @@ async def anam_session_token(req: Request):
         "Content-Type": "application/json",
     }
 
-    # ❗ httpx.Timeout: указываем все четыре
+    # httpx.Timeout: указываем все четыре
     timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(f"{ANAM_BASE}/v1/auth/session-token", json=payload, headers=headers)
@@ -125,7 +124,13 @@ async def anam_session_token(req: Request):
 # Нужен для вызовов SDK: /v1/metrics/client, /v1/engine/session, и т.д.
 @app.api_route("/anam/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def anam_proxy(path: str, request: Request):
-    # Спец-роут /v1/auth/session-token перехвачен выше, сюда попадут все остальные
+    """
+    Прокси с корректным стримингом:
+    - НЕ используем `async with client.stream(...)` вокруг `StreamingResponse`,
+      иначе httpx закроет поток раньше времени и будет httpx.StreamClosed.
+    - Делаем `client.send(..., stream=True)` и возвращаем генератор,
+      который сам дочитывает и закрывает ответ.
+    """
     url = f"{ANAM_BASE}/{path}"
     method = request.method
 
@@ -135,27 +140,39 @@ async def anam_proxy(path: str, request: Request):
     # Тело запроса
     body = await request.body()
 
-    # ❗ httpx.Timeout: указываем все четыре (длинный read для SSE)
+    # Таймауты: длинный read для SSE/долгих ответов
     timeout = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            # stream-режим: корректно прокидываем и JSON, и SSE
-            async with client.stream(method, url, params=request.query_params, headers=fwd_headers, content=body) as r:
-                resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS}
-                media = r.headers.get("content-type", None)
+            # Собираем запрос вручную и отправляем в stream=True
+            req_up = client.build_request(
+                method, url, params=request.query_params, headers=fwd_headers, content=body
+            )
+            r = await client.send(req_up, stream=True)
 
-                # SSE — отключаем буферизацию
-                if media and "text/event-stream" in media:
-                    resp_headers["X-Accel-Buffering"] = "no"
-                    resp_headers["Cache-Control"] = "no-cache"
-                    resp_headers["Connection"] = "keep-alive"
+            media = r.headers.get("content-type")
+            resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS}
 
-                return StreamingResponse(
-                    r.aiter_bytes(),
-                    status_code=r.status_code,
-                    media_type=media,
-                    headers=resp_headers,
-                )
+            # SSE — отключаем буферизацию
+            if media and "text/event-stream" in media:
+                resp_headers["X-Accel-Buffering"] = "no"
+                resp_headers["Cache-Control"] = "no-cache"
+                resp_headers["Connection"] = "keep-alive"
+
+            async def iter_response():
+                try:
+                    async for chunk in r.aiter_bytes():
+                        yield chunk
+                finally:
+                    # очень важно корректно закрыть поток
+                    await r.aclose()
+
+            return StreamingResponse(
+                iter_response(),
+                status_code=r.status_code,
+                media_type=media,
+                headers=resp_headers,
+            )
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
