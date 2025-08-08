@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+      align-items: center;
+      background-color: #f9f9f9;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: auto; /* Разрешаем скролл, если контент превышает высоту экрана */
+    }
+
+    .burger-menu {
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      z-index: 10;
+    }
+
+    .burger-line {
+      width: 30px;
+      height: 3px;
+      background-color: #333;
+      transition: transform 0.3s ease;
+    }
+
+    .message {
+      margin-bottom: 15px;
+    }
+
+    .message.incoming {
+      display: flex;
+      flex-direction: row;
+      justify-content: flex-start;
+    }
+
+    .message.outgoing {
+      display: flex;
+      flex-direction: row;
+      justify-content: flex-end;
+    }
+
+    .message-bubble {
+      background-color: #f0f0f0;
+      padding: 10px;
+      border-radius: 12px;
+      max-width: 70%;
+      word-wrap: break-word;
+    }
+
+    .message-bubble.incoming {
+      background-color: #e1f5fe;
+    }
+
+    .message-bubble.outgoing {
+      background-color: #fff9c4;
+    }
+
+    .drawer {
+      width: 250px;
+      background-color: #f5f5f5;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      transform: translateX(-100%);
+      transition: transform 0.3s ease;
+      z-index: 9;
+      overflow-y: auto;
+      padding: 1em;
+    }
+
+    .drawer.visible {
+      transform: translateX(0);
+    }
+
+    .drawer h2 {
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .drawer ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .drawer ul li {
+      padding: 10px;
+      margin-bottom: 5px;
+      background-color: #fff;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+
+    .drawer ul li:hover {
+      background-color: #e0e0e0;
+    }
+
+    #videoContainer {
+      display: none;
+      justify-content: center;
+      margin-bottom: 1em;
+    }
+
+    #avatarVideo {
+      width: 100%;
+      max-height: 300px;
+      border-radius: 10px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    #chatMsg {
+      margin-top: 20px;
+      font-size: 1rem;
+      color: #666;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+
+    .mic-button {
+      border: none;
+      background-color: #6200ea;
+      cursor: pointer;
+      position: relative;
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.3s ease, transform 0.2s ease;
+    }
+
+    .mic-button.active {
+    background-color: #ff3b3b;
+    }
+
+    .mic-button svg {
+        width: 24px;
+        height: 24px;
+        fill: #fff;
+    }
+
+    #chatHistory {
+      width: 100%;
+      height: 300px;
+      margin-top: 20px;
+      overflow-y: auto;
+      padding: 10px;
+      border: 1px solid #ddd;
+      background-color: #fff;
+      border-radius: 5px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    #chatHistory p {
+      margin-bottom: 10px;
+    }
+
+    @media (max-width: 768px) {
+      .drawer {
+        width: 80%;
+      }
+    }
+
+    .drawer {
+    width: 300px;
+    background-color: #fefefe;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.2);
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    z-index: 9;
+    overflow-y: auto;
+    padding: 1.5em 1em;
+    border-right: 1px solid #ddd;
+  }
+
+  .drawer.visible {
+    transform: translateX(0);
+  }
+
+  .drawer h2 {
+    font-size: 1.75rem;
+    color: #333;
+    margin-bottom: 1rem;
+    text-align: center;
+    font-weight: bold;
+  }
+
+  .drawer ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .drawer ul li {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    margin-bottom: 10px;
+    background-color: #f9f9f9;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    transition: all 0.2s ease;
+    overflow: hidden;
+    font-size: 1rem;
+    color: #333;
+  }
+
+  .drawer ul li:hover {
+    background-color: #e1f5fe;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  }
+
+  .drawer ul li::before {
+    content: "•";
+    font-size: 1.25rem;
+    margin-right: 10px;
+    color: #6200ea;
+  }
+
+  .drawer ul li:last-child {
+    margin-bottom: 0;
+  }
+
+  .drawer input[type="text"] {
+    width: calc(100% - 100px);
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 1rem;
+    outline: none;
+    margin-right: 10px;
+  }
+
+  .drawer input[type="text"]:focus {
+    border-color: #6200ea;
+    box-shadow: 0 0 5px rgba(98, 0, 234, 0.3);
+  }
+
+  .drawer button {
+    padding: 10px 15px;
+    background-color: #6200ea;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+
+  .drawer button:hover {
+    background-color: #4a00b4;
+  }
+
+  .video-container {
+  position: relative;
+  width: 100%;
+  max-width: 600px;
+  height: 300px; /* Ensure the video container has a fixed height */
+  background-color: #f5f5f5; /* Background for when loading */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.video-container.loading::before {
+  content: "";
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0.8); /* Semi-transparent overlay */
+  z-index: 2;
+}
+
+.loading-spinner {
+  position: absolute;
+  z-index: 3;
+  border: 4px solid #ccc; /* Light gray border */
+  border-top: 4px solid #6200ea; /* Purple border for animation */
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite; /* Infinite spinning */
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.video-container video {
+  width: 100%;
+  height: 100%;
+  z-index: 1; /* Keep video below spinner */
+}
+
+#chatContent {
+  width: 100%;
+  max-width: 800px; /* Increased width for desktop */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5em; /* Increased padding for better spacing */
+  background-color: #ffffff; /* Optional background for clarity */
+  border-radius: 10px; /* Add slight rounding for aesthetics */
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+}
+
+#chatHistory {
+  width: 100%;
+  height: 400px; /* Increased height */
+  margin-top: 20px;
+  overflow-y: auto;
+  padding: 15px; /* Better padding */
+  border: 1px solid #ddd;
+  background-color: #fefefe;
+  border-radius: 10px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  font-size: 0.9rem; /* Slightly smaller text size */
+  line-height: 1.4; /* Adjust line height for better readability */
+}
+
+.message-bubble {
+  background-color: #f0f0f0;
+  padding: 12px; /* Adjust padding for consistency */
+  border-radius: 12px;
+  max-width: 75%; /* More width for messages */
+  word-wrap: break-word;
+  font-size: 0.9rem; /* Slightly reduced font size */
+}
+
+.message-bubble.incoming {
+  background-color: #e1f5fe;
+}
+
+.message-bubble.outgoing {
+  background-color: #fff9c4;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.mic-button {
+  border: none;
+  background-color: #6200ea;
+  cursor: pointer;
+  position: relative;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.3s ease;
+}
+
+.export-button {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 50px;
+  height: 50px;
+  border: transparent;
+  background-color: transparent; /* Прозрачный фон */
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.3s ease, transform 0.2s ease;
+  margin-right: 20px; /* Отступ справа */
+}
+
+.export-button i {
+  font-size: 20px;
+  color: #6200ea; /* Фиолетовая иконка */
+}
+
+.export-button:hover {
+  background-color: rgba(98, 0, 234, 0.1); /* Лёгкий фиолетовый фон при наведении */
+  transform: scale(1.1);
+}
+
+.controls {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 20px;
+  width: 100%; /* Для центрирования */
+}
+
+/* Общие стили для списка чатов */
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+li {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  margin-bottom: 5px;
+  background-color: #f9f9f9;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+  font-size: 1rem;
+  color: #333;
+}
+
+/* Наведение на элемент списка чатов */
+li:hover {
+  background-color: #e1f5fe;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Контейнер кнопки и меню */
+.dropdown-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Стили для кнопки с тремя точками */
+.dots-button {
+  background: #6200ea;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-left: 10px;
+  padding: 5px 8px;
+  border-radius: 50%;
+  color: white;
+  position: relative;
+}
+
+/* Выпадающее меню */
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  background-color: #fff;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+  min-width: 120px;
+  padding: 5px 0;
+}
+
+/* Показываем меню, если оно активно */
+.dropdown-menu.active {
+  display: block;
+}
+
+/* Кнопка внутри меню */
+.dropdown-menu button {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 10px;
+  font-size: 1rem;
+  text-align: left;
+  color: #333;
+  cursor: pointer;
+}
+
+.dropdown-menu button:hover {
+  background-color: #f5f5f5;
+  color: #6200ea;
+}
+
+.dropdown-menu-container {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+#personaSelect {
+  width: 80%;
+  max-width: 300px;
+  padding: 10px;
+  font-size: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  background-color: #f9f9f9;
+  color: #333;
+  appearance: none;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+#personaSelect:focus {
+  border-color: #6200ea;
+  box-shadow: 0 0 5px rgba(98, 0, 234, 0.3);
+}
+
+
+@media (min-width: 1024px) {
+  #chatContent {
+    max-width: 900px; /* Further increase width for large screens */
+    margin-top: 30px;
+  }
+
+  #chatHistory {
+    height: 500px; /* Increase chat history height for large screens */
+    font-size: 1rem; /* Slightly larger text for readability on big screens */
+  }
+
+  .message-bubble {
+    font-size: 1rem; /* Adjusted for better visibility on larger screens */
+  }
+}
+
+  </style>
+  <title>Interactive Chat UI</title>
+</head>
+<body>
+  <!-- Бургер-меню для списка чатов -->
+  <div class="burger-menu" id="burgerMenu">
+    <div class="burger-line"></div>
+    <div class="burger-line"></div>
+    <div class="burger-line"></div>
+  </div>
+
+  <!-- Сайдбар -->
+  <div class="drawer" id="sidebar">
+    <h2>Chats</h2>
+    <ul id="chatList">
+      <!-- Список чатов -->
+    </ul>
+    <br>
+    <div>
+      <input type="text" id="chatNameInput" placeholder="Chat Name" />
+      <button id="createChatButton">Create Chat</button>
+    </div>
+  </div>
+
+  <!-- Основной контент -->
+  <main id="chatContent">
+    <div id="selector-persona" class="dropdown-menu-container">
+      <select id="personaSelect">
+        <option value="" selected disabled>Choose your persona</option>
+        <option value="MARIA_MODEL">Maria (psychology expert)</option>
+        <option value="VASILISA_MODEL">Vasilisa (ORG Assistant)</option>
+        <option value="NICK_MODEL">Nick (Saxe Mortgage assistant)</option>
+        <option value="JOHN_PULSE_MODEL">John (Pulse PEMF USA assistant)</option>
+      </select>
+    </div>
+
+    
+    <div id="videoContainer" class="video-container loading">
+      <div id="loading-spinner" class="loading-spinner"></div> <!-- Spinner for loading -->
+      <video id="avatarVideo" autoplay playsinline></video>
+    </div>
+
+    <div id="chatMsg">Please select one of your chats or create a new one.</div>
+
+    <div id="chatHistory" style="display: none; max-height: 35vh;">
+      <!-- История сообщений -->
+    </div>
+
+    <div class="controls">
+      <button class="mic-button" id="listenButton" style="display: none;">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"></path>
+            <path d="M19 11c0 3.31-2.69 6-6 6s-6-2.69-6-6H5c0 4.08 3.05 7.44 7 7.93V22h2v-3.07c3.95-.49 7-3.85 7-7.93h-2z"></path>
+        </svg>          
+      </button>
+
+      <button class="export-button" id="exportButton" style="display: none;">
+        <i class="fas fa-download"></i>
+      </button>
+    </div>
+  </main>
+
+  <script>
+    const burgerMenu = document.getElementById('burgerMenu');
+    const sidebar = document.getElementById('sidebar');
+    const listenButton = document.getElementById('listenButton');
+    const chatList = document.getElementById('chatList');
+
+    // Управление сайдбаром
+    burgerMenu.addEventListener('click', () => {
+      sidebar.classList.toggle('visible');
+    });
+
+    // Анимация кнопки микрофона
+    let isRecording = false;
+
+    listenButton.addEventListener('click', () => {
+    isRecording = !isRecording;
+    listenButton.classList.toggle('active', isRecording);
+    });
+
+
+    // Add event listener to remove the loading class once the video loads
+    avatarVideo.addEventListener("canplaythrough", () => {
+    videoContainer.classList.remove("loading");
+    });
+
+    // Optional: Add a fallback timeout in case the event doesn't trigger
+    setTimeout(() => {
+    videoContainer.classList.remove("loading");
+    }, 5000); // 5-second timeout as a fallback
+  </script>
+
+  <script type="module" src="src/main.ts"></script>
+</body>
+</html>

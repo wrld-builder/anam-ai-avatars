@@ -1,0 +1,67 @@
+# --- OS / редакторы ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.orig
+.idea/
+.vscode/
+*.iml
+
+# --- Логи / временные ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+.tmp/
+temp/
+*.tmp
+
+# --- Node/Vite/Frontend ---
+node_modules/
+dist/
+build/
+.cache/
+.vite/
+.svelte-kit/
+*.tsbuildinfo
+
+# lock-файлы НЕ игнорим: package-lock.json / pnpm-lock.yaml / yarn.lock
+
+# --- Python/Backend ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.tox/
+.venv/
+venv/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage*
+.ipynb_checkpoints
+
+# --- Env-файлы ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# --- OS/архивы ---
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# --- Nginx/Certbot вспомогательные ---
+/etc/letsencrypt/
+certbot/
