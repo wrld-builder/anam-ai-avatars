@@ -1,6 +1,8 @@
+# backend/app/main.py
 from fastapi import FastAPI, HTTPException, Request, Query, Response
 from pydantic import BaseModel
 import os
+import asyncio
 import openai
 import httpx
 from dotenv import load_dotenv
@@ -44,7 +46,7 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*", "X-API-KEY"],
+    allow_headers=["*", "X-API-KEY", "Authorization", "Content-Type"],
 )
 
 class PromptRequest(BaseModel):
@@ -107,9 +109,9 @@ async def anam_session_token(req: Request):
     headers = {
         "Authorization": f"Bearer {ANAM_API_KEY}",
         "Content-Type": "application/json",
+        "Accept-Encoding": "identity",  # без gzip — стабильнее для прокси
     }
 
-    # httpx.Timeout: указываем все четыре
     timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(f"{ANAM_BASE}/v1/auth/session-token", json=payload, headers=headers)
@@ -121,21 +123,24 @@ async def anam_session_token(req: Request):
 
 
 # ========== Anam: общий прокси для /anam/api/* ==========
-# Нужен для вызовов SDK: /v1/metrics/client, /v1/engine/session, и т.д.
 @app.api_route("/anam/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def anam_proxy(path: str, request: Request):
     """
-    Прокси с корректным стримингом:
-    - НЕ используем `async with client.stream(...)` вокруг `StreamingResponse`,
-      иначе httpx закроет поток раньше времени и будет httpx.StreamClosed.
-    - Делаем `client.send(..., stream=True)` и возвращаем генератор,
-      который сам дочитывает и закрывает ответ.
+    Прокси со стабильным стримингом:
+    - OPTIONS отдаём 204, чтобы CORS-preflight не шёл в апстрим.
+    - Для остальных методов: client.send(..., stream=True) и асинхр. генератор.
+    - Ловим httpx.ReadError / asyncio.CancelledError и завершаем спокойно.
     """
+    if request.method == "OPTIONS":
+        return Response(status_code=204)
+
     url = f"{ANAM_BASE}/{path}"
     method = request.method
 
     # Проксируем заголовки (без hop-by-hop)
     fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS}
+    # Стабильнее без gzip
+    fwd_headers["Accept-Encoding"] = "identity"
 
     # Тело запроса
     body = await request.body()
@@ -145,17 +150,16 @@ async def anam_proxy(path: str, request: Request):
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            # Собираем запрос вручную и отправляем в stream=True
             req_up = client.build_request(
                 method, url, params=request.query_params, headers=fwd_headers, content=body
             )
             r = await client.send(req_up, stream=True)
 
-            media = r.headers.get("content-type")
+            media = r.headers.get("content-type") or "application/octet-stream"
             resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS}
 
             # SSE — отключаем буферизацию
-            if media and "text/event-stream" in media:
+            if "text/event-stream" in media:
                 resp_headers["X-Accel-Buffering"] = "no"
                 resp_headers["Cache-Control"] = "no-cache"
                 resp_headers["Connection"] = "keep-alive"
@@ -163,7 +167,13 @@ async def anam_proxy(path: str, request: Request):
             async def iter_response():
                 try:
                     async for chunk in r.aiter_bytes():
+                        # безопасность: гарантируем bytes
+                        if isinstance(chunk, str):
+                            chunk = chunk.encode("utf-8", "ignore")
                         yield chunk
+                except (httpx.ReadError, asyncio.CancelledError):
+                    # апстрим закрылся — тихо выходим
+                    return
                 finally:
                     # очень важно корректно закрыть поток
                     await r.aclose()
