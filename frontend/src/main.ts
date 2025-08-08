@@ -7,7 +7,7 @@ import { EVA_PERSONA_ID, LEO_PERSONA_ID, PABLO_PERSONA_ID } from './lib/constant
    ============================== */
 // Бэкенд-прокси — только для получения sessionToken (прячет ANAM_API_KEY)
 const ANAM_PROXY_BASE = '/anam/api'
-// Весь SDK (REST + WS) идёт НАПРЯМУЮ в Anam — там уже только sessionToken
+// Весь SDK (REST + WS) идёт НАПРЯМУЮ в Anam — уже только sessionToken
 const ANAM_DIRECT_BASE = 'https://api.anam.ai'
 
 /* ==============================
@@ -42,13 +42,14 @@ let currentChat: string | null = null
 let isRecording = false
 let activeES: EventSource | null = null
 
-// live-транскрипт во время записи
+// live-транскрипт во время записи (растущий)
 let liveTranscript = ''
 let liveUserBubble: HTMLDivElement | null = null
 let anamListenersBound = false
-
-// базовая сумма всех user-сообщений на момент старта записи
 let baselineUserJoined: string | null = null
+
+// мобильный «анлок» медиа
+let mediaUnlocked = false
 
 /* ==============================
    Types + storage helpers
@@ -88,6 +89,40 @@ async function ensureClient(): Promise<AnamClient> {
   if (!anamClient) await initializeAvatarSession()
   if (!anamClient) throw new Error('Failed to initialize avatar session')
   return anamClient
+}
+
+/* ==============================
+   Мобильный медиахендшейк
+   ============================== */
+function attachOneTimeUnlockHandlers() {
+  const unlock = async () => {
+    await unlockMediaPlayback()
+    document.removeEventListener('touchend', unlock)
+    document.removeEventListener('click', unlock)
+  }
+  document.addEventListener('touchend', unlock, { passive: true, once: true })
+  document.addEventListener('click', unlock, { once: true })
+}
+
+async function unlockMediaPlayback() {
+  if (mediaUnlocked) return
+  mediaUnlocked = true
+  try {
+    // Разблокируем AudioContext
+    const AC = (window as any).AudioContext || (window as any).webkitAudioContext
+    if (AC) {
+      const ctx = new AC()
+      if (ctx.state !== 'running') await ctx.resume()
+    }
+  } catch {}
+  try {
+    // Разрешаем muted-воспроизведение видео (iOS/Android)
+    if (el.video) {
+      el.video.muted = true
+      el.video.setAttribute('playsinline', '')
+      await el.video.play().catch(() => {})
+    }
+  } catch {}
 }
 
 /* ==============================
@@ -248,7 +283,6 @@ async function fetchAnamSessionToken(personaId: string): Promise<string> {
   return j.sessionToken
 }
 
-// извлекаем текст независимо от формата
 function extractText(val: any): string {
   if (!val) return ''
   if (typeof val === 'string') return val
@@ -260,8 +294,6 @@ function extractText(val: any): string {
   }
   return ''
 }
-
-// склеиваем все user-сообщения в одну строку
 function joinedUserText(messages: any[]): string {
   const parts: string[] = []
   for (const m of messages || []) {
@@ -272,8 +304,6 @@ function joinedUserText(messages: any[]): string {
   }
   return parts.join(' ').replace(/\s+/g, ' ').trim()
 }
-
-// длина общего префикса (на случай мелких рассинхронов)
 function lcpLen(a: string, b: string): number {
   const n = Math.min(a.length, b.length)
   let i = 0
@@ -292,6 +322,9 @@ async function initializeAvatarSession() {
   el.mic.style.display = 'flex'
   el.chatHistory && (el.chatHistory.style.display = 'block')
 
+  // На мобильных — сразу подвешиваем one-time unlock
+  attachOneTimeUnlockHandlers()
+
   const personaId = personaIdFromModel(selectedModel)
   const token = await fetchAnamSessionToken(personaId)
 
@@ -303,14 +336,21 @@ async function initializeAvatarSession() {
 
   const client = clientOrThrow()
 
-  // Автоплей на iOS/Safari
+  // Автоплей на iOS/Android: сначала muted
   if (el.video) {
-    el.video.muted = false
+    el.video.muted = true
     el.video.playsInline = true
     el.video.autoplay = true
   }
 
   client.streamToVideoElement('avatarVideo')
+
+  // Сразу пытаемся "подтолкнуть" воспроизведение (в т.ч. на 4G)
+  try { await el.video?.play() } catch {}
+  // Ретраи на случай, если медиапоток пришёл позже
+  setTimeout(() => { el.video?.play().catch(() => {}) }, 400)
+  setTimeout(() => { el.video?.play().catch(() => {}) }, 1200)
+
   client.muteInputAudio() // микрофон выключен, пока не нажали кнопку
 
   // Когда видео реально заиграет — убираем лоадер
@@ -319,13 +359,11 @@ async function initializeAvatarSession() {
     el.spinner.style.display = 'none'
     el.videoWrap.classList.remove('loading')
   })
-  // Fallback: события медиаплеера
   el.video?.addEventListener('canplaythrough', () => {
     if (!el.spinner || !el.videoWrap) return
     el.spinner.style.display = 'none'
     el.videoWrap.classList.remove('loading')
   })
-  // Fallback-таймер
   setTimeout(() => {
     if (!el.spinner || !el.videoWrap) return
     el.spinner.style.display = 'none'
@@ -340,22 +378,15 @@ async function initializeAvatarSession() {
     client.addListener('MESSAGE_HISTORY_UPDATED' as any, (messages: any[]) => {
       if (!isRecording) return
       const full = joinedUserText(messages)
-
-      // инициализация базовой строки при первом апдейте после старта
       if (baselineUserJoined === null) {
         baselineUserJoined = full
         if (!liveUserBubble) liveUserBubble = appendMessageBubble('user', '', true)
         return
       }
-
-      // вычисляем суффикс относительно базовой строки (с учётом возможного LCP-сдвига)
       const base = baselineUserJoined
       const lcp = lcpLen(full, base)
       let suffix = full.slice(lcp).trimStart()
-
-      // защита от регресса: если вдруг full «сжался» — не уменьшаем текст
       if (full.length < base.length) suffix = ''
-
       if (suffix) {
         liveTranscript = suffix
         if (!liveUserBubble) liveUserBubble = appendMessageBubble('user', '', true)
@@ -369,6 +400,13 @@ async function initializeAvatarSession() {
       alert('Не удалось запустить сессию аватара. Подробности в консоли.')
     })
   }
+
+  // На случай скрытия/возврата вкладки в мобилке — пробуем заново проиграть
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      el.video?.play().catch(() => {})
+    }
+  })
 }
 
 async function terminateAvatarSession() {
@@ -385,6 +423,10 @@ async function terminateAvatarSession() {
    ============================== */
 async function startRecording() {
   const client = await ensureClient()
+
+  // На мобильных: перед началом записи — точно делаем unlock
+  await unlockMediaPlayback()
+
   try {
     const AC = (window as any).AudioContext || (window as any).webkitAudioContext
     if (AC) {
@@ -392,10 +434,14 @@ async function startRecording() {
       if (ac.state === 'suspended') await ac.resume()
     }
   } catch {}
+
+  // Если хочешь, чтобы аватар был слышен до записи, можно размутить здесь:
+  // el.video && (el.video.muted = false)
+
   client.unmuteInputAudio()
   isRecording = true
   liveTranscript = ''
-  baselineUserJoined = null // сбрасываем базу при новом старте
+  baselineUserJoined = null
   if (!liveUserBubble) liveUserBubble = appendMessageBubble('user', '', true)
   el.mic?.classList.add('active')
 }
@@ -407,20 +453,17 @@ async function stopRecording() {
   el.mic?.classList.remove('active')
 
   const text = liveTranscript.trim()
-  // фиксируем «живой» пузырь и сохраняем
   if (liveUserBubble) {
     liveUserBubble.removeAttribute('data-streaming')
     if (text) liveUserBubble.textContent = text
   }
   if (text && currentChat) addPersistedMessage('user', text)
 
-  // сбрасываем live-состояние
   liveUserBubble = null
   baselineUserJoined = null
   const utterance = text
   liveTranscript = ''
 
-  // запускаем генерацию ответа только если есть текст
   if (utterance) await handleUserTranscript(utterance)
 }
 
@@ -436,12 +479,10 @@ async function toggleRecording() {
 async function handleUserTranscript(transcript: string) {
   const client = await ensureClient()
 
-  // прервать текущую речь для мгновенного turn-taking
   try { (client as any).interruptPersona?.() } catch {}
 
   if (activeES) { try { activeES.close() } catch {} ; activeES = null }
 
-  // создаём "стримящийся" пузырь ассистента
   const bubble = appendMessageBubble('assistant', '', true)
   let assistantBuffer = ''
 
@@ -450,6 +491,9 @@ async function handleUserTranscript(transcript: string) {
   const es = new EventSource(url)
   activeES = es
 
+  // На время ответа — размутим видео, чтобы точно был звук
+  if (el.video) el.video.muted = false
+
   es.onmessage = async (ev) => {
     const chunk = ev.data
     if (chunk === '__END_OF_STREAM__') {
@@ -457,7 +501,6 @@ async function handleUserTranscript(transcript: string) {
       if (activeES === es) activeES = null
       if (talk?.isActive()) await talk.endMessage()
 
-      // финализируем пузырь
       bubble.removeAttribute('data-streaming')
       addPersistedMessage('assistant', assistantBuffer.trim())
       return
@@ -473,9 +516,7 @@ async function handleUserTranscript(transcript: string) {
     if (activeES === es) activeES = null
     if (talk?.isActive()) talk.endMessage()
     bubble.removeAttribute('data-streaming')
-    if (!assistantBuffer) {
-      bubble.textContent = 'Ошибка соединения. Попробуйте ещё раз.'
-    }
+    if (!assistantBuffer) bubble.textContent = 'Ошибка соединения. Попробуйте ещё раз.'
   }
 }
 
@@ -509,10 +550,11 @@ document.addEventListener('click', () => {
 window.addEventListener('load', () => {
   loadChatList()
   renderEmptyState()
-  // iOS-friendly autoplay
+  // iOS-friendly autoplay: на всякий
   el.video?.setAttribute('playsinline', '')
   el.video?.setAttribute('autoplay', '')
   if (el.video) el.video.muted = true
+  attachOneTimeUnlockHandlers()
 })
 
 window.addEventListener('beforeunload', () => {
