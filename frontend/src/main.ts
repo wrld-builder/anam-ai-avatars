@@ -1,12 +1,14 @@
+// src/main.ts
 import { createClient, AnamClient } from '@anam-ai/js-sdk'
 import { EVA_PERSONA_ID, LEO_PERSONA_ID, PABLO_PERSONA_ID } from './lib/constants'
 
 /* ==============================
-   Маршруты + прокси Anam
+   Маршруты + прокси Anam (как в твоей рабочей версии)
    ============================== */
 const ANAM_BASE   = '/anam/api'
 const ANAM_ORIGIN = 'https://api.anam.ai'
 
+// Проксируем ВСЕ вызовы SDK к Anam через наш бэкенд (без изменения твоих стилей/HTML)
 ;(function patchFetchAndEventSourceForAnam() {
   const origFetch = window.fetch.bind(window)
 
@@ -165,7 +167,7 @@ async function initializeAvatarSession() {
   anamClient?.streamToVideoElement('avatarVideo')
   anamClient?.muteInputAudio()
 
-  // события (строковые имена, без типов SDK)
+  // события
   anamClient?.addListener('VIDEO_PLAY_STARTED' as any, () => {
     el.spinner.style.display = 'none'
     el.videoWrap.classList.remove('loading')
@@ -371,31 +373,40 @@ function selectChat(name: string) {
 }
 
 /* ==============================
-   Бургер: надёжные обработчики
+   Бургер: надёжные обработчики (без изменения CSS)
    ============================== */
 function onBurgerToggle(e: Event) {
   e.preventDefault()
   e.stopPropagation()
   el.sidebar?.classList.toggle('visible')
 }
-// заменим узел на клон, чтобы снять возможные старые слушатели
-const burgerNode = document.getElementById('burgerMenu')
-if (burgerNode && burgerNode.parentNode) {
-  const clone = burgerNode.cloneNode(true) as HTMLElement
-  burgerNode.parentNode.replaceChild(clone, burgerNode)
-  clone.addEventListener('click', onBurgerToggle, { passive: false })
-  clone.addEventListener('pointerup', onBurgerToggle, { passive: false })
-  clone.addEventListener('touchend', onBurgerToggle, { passive: false })
-  clone.addEventListener('keydown', (ev: KeyboardEvent) => {
-    if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
-  })
+
+// 1) Снимаем возможные старые слушатели и вешаем заново на сам узел
+{
+  const burgerNode = document.getElementById('burgerMenu')
+  if (burgerNode && burgerNode.parentNode) {
+    const clone = burgerNode.cloneNode(true) as HTMLElement
+    burgerNode.parentNode.replaceChild(clone, burgerNode)
+    clone.addEventListener('click', onBurgerToggle, { passive: false })
+    clone.addEventListener('pointerup', onBurgerToggle, { passive: false })
+    clone.addEventListener('touchend', onBurgerToggle, { passive: false })
+    clone.addEventListener('keydown', (ev: KeyboardEvent) => {
+      if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
+    })
+  }
 }
 
+// 2) На всякий пожарный — делегирование (если вдруг бургер перерисуют динамически)
+document.addEventListener('click', (ev) => {
+  const t = ev.target as HTMLElement | null
+  if (t && t.closest && t.closest('#burgerMenu')) onBurgerToggle(ev)
+}, { capture: true })
+
 /* ==============================
-   Wire UI
+   Wire UI (без изменения твоих стилей)
    ============================== */
 el.persona.addEventListener('change', async () => {
-  // только запоминаем выбор, НО не запускаем сессию
+  // только запоминаем выбор, НЕ запускаем сессию
   selectedPersona = el.persona.value
 
   // если была сессия — закрыть
@@ -425,15 +436,13 @@ el.exportBtn.addEventListener('click', () => {
 })
 
 window.addEventListener('load', () => {
-  // iOS-friendly
+  // ничего по стилям не меняем — только инициализация
   el.video.setAttribute('playsinline', '')
   el.video.setAttribute('autoplay', '')
   el.video.muted = false
 
-  // список чатов
   loadChats()
 
-  // восстановить последний чат (если был)
   const saved = localStorage.getItem('currentChat')
   if (saved) selectChat(saved)
 })
