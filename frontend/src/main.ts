@@ -1,15 +1,12 @@
-// src/main.ts
 import { createClient, AnamClient } from '@anam-ai/js-sdk'
-import { AnamEvent } from '@anam-ai/js-sdk/dist/module/types'
 import { EVA_PERSONA_ID, LEO_PERSONA_ID, PABLO_PERSONA_ID } from './lib/constants'
 
 /* ==============================
-   Маршруты и патчи сетевых вызовов
+   Маршруты + прокси Anam
    ============================== */
 const ANAM_BASE   = '/anam/api'
 const ANAM_ORIGIN = 'https://api.anam.ai'
 
-// Проксируем ВСЕ вызовы SDK к Anam через наш бэкенд
 ;(function patchFetchAndEventSourceForAnam() {
   const origFetch = window.fetch.bind(window)
 
@@ -24,18 +21,10 @@ const ANAM_ORIGIN = 'https://api.anam.ai'
       if (typeof input !== 'string' && !(input instanceof URL)) {
         const r = input as Request
         input = new Request(url, {
-          method: r.method,
-          headers: r.headers,
-          body: r.body as any,
-          mode: r.mode,
-          credentials: r.credentials,
-          cache: r.cache,
-          redirect: r.redirect,
-          referrer: r.referrer,
-          referrerPolicy: r.referrerPolicy,
-          integrity: r.integrity,
-          keepalive: (r as any).keepalive,
-          signal: r.signal,
+          method: r.method, headers: r.headers, body: r.body as any,
+          mode: r.mode, credentials: r.credentials, cache: r.cache,
+          redirect: r.redirect, referrer: r.referrer, referrerPolicy: r.referrerPolicy,
+          integrity: r.integrity, keepalive: (r as any).keepalive, signal: r.signal,
         })
       } else {
         input = url
@@ -45,37 +34,43 @@ const ANAM_ORIGIN = 'https://api.anam.ai'
   }
 
   const OrigES = window.EventSource
-  class PatchedEventSource extends OrigES {
+  class PatchedES extends OrigES {
     constructor(url: string | URL, opts?: EventSourceInit) {
       const u = typeof url === 'string' ? url : url.href
       super(u.startsWith(ANAM_ORIGIN) ? u.replace(ANAM_ORIGIN, ANAM_BASE) : u, opts)
     }
   }
-  ;(window as any).EventSource = PatchedEventSource
+  ;(window as any).EventSource = PatchedES
 })()
 
 /* ==============================
    DOM
    ============================== */
 const el = {
+  burger: document.getElementById('burgerMenu') as HTMLElement | null,
+  sidebar: document.getElementById('sidebar') as HTMLElement | null,
+
+  persona: document.getElementById('personaSelect') as HTMLSelectElement,
   video: document.getElementById('avatarVideo') as HTMLVideoElement,
+  videoWrap: document.getElementById('videoContainer') as HTMLElement,
+  spinner: document.getElementById('loading-spinner') as HTMLElement,
+
+  chatMsg: document.getElementById('chatMsg') as HTMLElement,
   listenBtn: document.getElementById('listenButton') as HTMLButtonElement,
-  chatHistory: document.getElementById('chatHistory') as HTMLElement,
+  exportBtn: document.getElementById('exportButton') as HTMLButtonElement,
+
   chatList: document.getElementById('chatList') as HTMLElement,
   chatName: document.getElementById('chatNameInput') as HTMLInputElement,
   chatCreate: document.getElementById('createChatButton') as HTMLButtonElement,
-  videoWrap: document.getElementById('videoContainer') as HTMLElement,
-  spinner: document.getElementById('loading-spinner') as HTMLElement,
-  exportBtn: document.getElementById('exportButton') as HTMLElement,
-  persona: document.getElementById('personaSelect') as HTMLSelectElement,
-  chatMsg: document.getElementById('chatMsg') as HTMLElement,
+
+  chatHistory: document.getElementById('chatHistory') as HTMLElement,
 }
 
 /* ==============================
    Состояние
    ============================== */
 let anamClient: AnamClient | null = null
-let selectedPersona = ''           // модель/персона
+let selectedPersona = ''       // выбранная модель
 let currentChat: string | null = null
 let isRecording = false
 let userTranscript = ''
@@ -90,15 +85,15 @@ type AnamSessionTokenResponse = { sessionToken: string; expiresAt?: string }
 
 async function fetchAnamSessionToken(personaId: string): Promise<string> {
   const controller = new AbortController()
-  const t = setTimeout(() => controller.abort(), 15000)
+  const to = setTimeout(() => controller.abort(), 15000)
   const res = await fetch(`${ANAM_BASE}/v1/auth/session-token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: controller.signal,
     body: JSON.stringify({ personaConfig: { personaId, disableBrains: true } }),
   }).catch((e) => { throw new Error(`ANAM token fetch failed: ${e}`) })
-  clearTimeout(t)
-  if (!res.ok) throw new Error(`ANAM token error: ${res.status} ${await res.text().catch(()=>'')}`)
+  clearTimeout(to)
+  if (!res.ok) throw new Error(`ANAM token error: ${res.status} ${await res.text().catch(()=> '')}`)
   const data = (await res.json()) as AnamSessionTokenResponse
   if (!data?.sessionToken) throw new Error('ANAM token error: empty payload')
   return data.sessionToken
@@ -118,7 +113,7 @@ function startSessionTimer() {
   }, 5 * 60 * 1000)
 }
 
-function appendBubble(role: 'user' | 'assistant', text: string, streaming = false) {
+function appendBubble(role: 'user'|'assistant', text: string, streaming = false) {
   const wrap = document.createElement('div')
   wrap.className = `message ${role === 'user' ? 'outgoing' : 'incoming'}`
   const bubble = document.createElement('div')
@@ -140,13 +135,13 @@ function requireChatOrWarn(): boolean {
 }
 
 /* ==============================
-   Сессия ANAM (запуск ТОЛЬКО при выбранном чате)
+   Сессия ANAM (старт только при выбранном чате)
    ============================== */
 async function initializeAvatarSession() {
-  if (!selectedPersona || !currentChat) return           // ← важный стоп
-  if (anamClient) return                                  // не дублируем
+  if (!selectedPersona || !currentChat) return
+  if (anamClient) return
 
-  // UI: показать контейнер, спиннер
+  // UI
   el.videoWrap.style.display = 'flex'
   el.videoWrap.classList.add('loading')
   el.spinner.style.display = 'block'
@@ -162,7 +157,7 @@ async function initializeAvatarSession() {
     apiBaseUrl: ANAM_BASE,
   })
 
-  // Настройки видео
+  // <video>
   el.video.playsInline = true
   el.video.autoplay = true
   el.video.muted = false
@@ -170,12 +165,12 @@ async function initializeAvatarSession() {
   anamClient?.streamToVideoElement('avatarVideo')
   anamClient?.muteInputAudio()
 
-  // события
-  anamClient?.addListener(AnamEvent.VIDEO_PLAY_STARTED, () => {
+  // события (строковые имена, без типов SDK)
+  anamClient?.addListener('VIDEO_PLAY_STARTED' as any, () => {
     el.spinner.style.display = 'none'
     el.videoWrap.classList.remove('loading')
   })
-  anamClient?.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages: any[]) => {
+  anamClient?.addListener('MESSAGE_HISTORY_UPDATED' as any, (messages: any[]) => {
     if (!isRecording || !currentUserBubble) return
     const last = messages[messages.length - 1]
     if (last?.role === 'user' && last?.content) {
@@ -196,7 +191,6 @@ async function terminateAvatarSession() {
   isRecording = false
   el.listenBtn.classList.remove('active')
   el.listenBtn.style.display = 'none'
-  // спиннер на всякий скрываем
   el.spinner.style.display = 'none'
   el.videoWrap.classList.remove('loading')
 }
@@ -210,10 +204,7 @@ async function startRecording() {
 
   try {
     const AC = (window as any).AudioContext || (window as any).webkitAudioContext
-    if (AC) {
-      const ac = new AC()
-      if (ac.state === 'suspended') await ac.resume()
-    }
+    if (AC) { const ac = new AC(); if (ac.state === 'suspended') await ac.resume() }
   } catch {}
 
   anamClient?.unmuteInputAudio()
@@ -259,7 +250,7 @@ async function handleUserTranscript(transcript: string) {
   const es = new EventSource(url)
   activeES = es
 
-  el.video.muted = false // чтобы ответ точно был слышен
+  el.video.muted = false
 
   es.onmessage = async (ev) => {
     const chunk = ev.data
@@ -305,21 +296,13 @@ function addChatItem(name: string) {
   const li = document.createElement('li')
   li.addEventListener('click', () => selectChat(name))
 
-  const span = document.createElement('span')
-  span.textContent = name
+  const span = document.createElement('span'); span.textContent = name
 
-  const box = document.createElement('div')
-  box.className = 'dropdown-container'
+  const box = document.createElement('div'); box.className = 'dropdown-container'
+  const dots = document.createElement('button'); dots.className = 'dots-button'; dots.textContent = '⋮'
+  const menu = document.createElement('div'); menu.className = 'dropdown-menu'
 
-  const dots = document.createElement('button')
-  dots.className = 'dots-button'
-  dots.textContent = '⋮'
-
-  const menu = document.createElement('div')
-  menu.className = 'dropdown-menu'
-
-  const rename = document.createElement('button')
-  rename.textContent = 'Rename'
+  const rename = document.createElement('button'); rename.textContent = 'Rename'
   rename.addEventListener('click', (e) => {
     e.stopPropagation()
     const nn = prompt('New name for chat', name) || name
@@ -334,8 +317,7 @@ function addChatItem(name: string) {
     menu.classList.remove('active')
   })
 
-  const del = document.createElement('button')
-  del.textContent = 'Delete'
+  const del = document.createElement('button'); del.textContent = 'Delete'
   del.addEventListener('click', (e) => {
     e.stopPropagation()
     li.remove()
@@ -357,12 +339,9 @@ function addChatItem(name: string) {
     menu.classList.toggle('active')
   })
 
-  menu.appendChild(rename)
-  menu.appendChild(del)
-  box.appendChild(dots)
-  box.appendChild(menu)
-  li.appendChild(span)
-  li.appendChild(box)
+  menu.appendChild(rename); menu.appendChild(del)
+  box.appendChild(dots); box.appendChild(menu)
+  li.appendChild(span); li.appendChild(box)
   el.chatList.appendChild(li)
 }
 
@@ -382,56 +361,47 @@ function createChat() {
 function selectChat(name: string) {
   currentChat = name
   localStorage.setItem('currentChat', name)
-  // перерисовать историю
+
   el.chatHistory.innerHTML = ''
   const data = JSON.parse(localStorage.getItem(name) || '{"messages":[]}')
   for (const m of (data.messages || [])) appendBubble(m.role, m.content, false)
 
-  // запуск сессии — ТОЛЬКО сейчас
+  // запуск сессии — только теперь
   initializeAvatarSession().catch(console.error)
+}
+
+/* ==============================
+   Бургер: надёжные обработчики
+   ============================== */
+function onBurgerToggle(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  el.sidebar?.classList.toggle('visible')
+}
+// заменим узел на клон, чтобы снять возможные старые слушатели
+const burgerNode = document.getElementById('burgerMenu')
+if (burgerNode && burgerNode.parentNode) {
+  const clone = burgerNode.cloneNode(true) as HTMLElement
+  burgerNode.parentNode.replaceChild(clone, burgerNode)
+  clone.addEventListener('click', onBurgerToggle, { passive: false })
+  clone.addEventListener('pointerup', onBurgerToggle, { passive: false })
+  clone.addEventListener('touchend', onBurgerToggle, { passive: false })
+  clone.addEventListener('keydown', (ev: KeyboardEvent) => {
+    if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
+  })
 }
 
 /* ==============================
    Wire UI
    ============================== */
-// --- burger toggle ---
-const burger = document.getElementById('burgerMenu') as HTMLElement | null
-const sidebar = document.getElementById('sidebar') as HTMLElement | null
-
-function onBurgerToggle(e: Event) {
-  e.preventDefault()
-  e.stopPropagation()
-  sidebar?.classList.toggle('visible')
-}
-
-// Снимаем возможно привязанные ранние обработчики (если были)
-const clone = burger?.cloneNode(true) as HTMLElement | null
-if (burger && clone && burger.parentNode) {
-  burger.parentNode.replaceChild(clone, burger)
-}
-
-// Вешаем надёжные события
-const target = document.getElementById('burgerMenu') as HTMLElement | null
-if (target) {
-  // tap/клик
-  target.addEventListener('click', onBurgerToggle, { passive: false })
-  target.addEventListener('pointerup', onBurgerToggle, { passive: false })
-  target.addEventListener('touchend', onBurgerToggle, { passive: false })
-  // доступность: Enter/Space
-  target.addEventListener('keydown', (ev: KeyboardEvent) => {
-    if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
-  })
-}
-
-
 el.persona.addEventListener('change', async () => {
-  // только меняем выбранную персону, НО НЕ ЗАПУСКАЕМ СЕССИЮ
+  // только запоминаем выбор, НО не запускаем сессию
   selectedPersona = el.persona.value
 
-  // если была активная сессия — завершаем
+  // если была сессия — закрыть
   if (anamClient) await terminateAvatarSession()
 
-  // сбрасываем UI к состоянию «выберите чат»
+  // UI: вернуться к подсказке «выберите чат»
   el.spinner.style.display = 'none'
   el.videoWrap.classList.remove('loading')
   el.listenBtn.style.display = 'none'
@@ -440,7 +410,8 @@ el.persona.addEventListener('change', async () => {
 })
 
 el.chatCreate.addEventListener('click', createChat)
-el.listenBtn.addEventListener('click', toggleRecording)
+el.listenBtn.addEventListener('click', async () => { await toggleRecording() })
+
 el.exportBtn.addEventListener('click', () => {
   const name = localStorage.getItem('currentChat')
   if (!name) return alert('Select a chat first.')
@@ -459,10 +430,10 @@ window.addEventListener('load', () => {
   el.video.setAttribute('autoplay', '')
   el.video.muted = false
 
-  // загрузить список чатов
+  // список чатов
   loadChats()
 
-  // восстановить выбранный чат (если был)
+  // восстановить последний чат (если был)
   const saved = localStorage.getItem('currentChat')
   if (saved) selectChat(saved)
 })
