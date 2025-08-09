@@ -412,16 +412,23 @@ async function selectChat(name: string) {
 /* ==============================
    Бургер — простой и надёжный обработчик
    ============================== */
-const burger = document.getElementById('burgerMenu') as HTMLElement | null
 function onBurgerToggle(e: Event) {
-  e.preventDefault()
-  e.stopPropagation()
+  e.preventDefault(); e.stopPropagation()
   el.sidebar?.classList.toggle('visible')
 }
-if (burger) {
-  burger.addEventListener('click', onBurgerToggle, { passive: false })
-  burger.addEventListener('touchend', onBurgerToggle, { passive: false })
-  burger.addEventListener('pointerup', onBurgerToggle, { passive: false })
+// Переназначаем слушатели на реальный узел (на случай дубликатов)
+{
+  const burgerNode = document.getElementById('burgerMenu')
+  if (burgerNode && burgerNode.parentNode) {
+    const clone = burgerNode.cloneNode(true) as HTMLElement
+    burgerNode.parentNode.replaceChild(clone, burgerNode)
+    clone.addEventListener('click', onBurgerToggle, { passive: false })
+    clone.addEventListener('pointerup', onBurgerToggle, { passive: false })
+    clone.addEventListener('touchend', onBurgerToggle, { passive: false })
+    clone.addEventListener('keydown', (ev: KeyboardEvent) => {
+      if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
+    })
+  }
 }
 
 /* ==============================
