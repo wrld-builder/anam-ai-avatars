@@ -622,15 +622,15 @@ li:hover {
   </main>
 
   <script>
-    // const burgerMenu = document.getElementById('burgerMenu');
+    const burgerMenu = document.getElementById('burgerMenu');
     const sidebar = document.getElementById('sidebar');
     const listenButton = document.getElementById('listenButton');
     const chatList = document.getElementById('chatList');
 
     // Управление сайдбаром
-    // burgerMenu.addEventListener('click', () => {
-    //   sidebar.classList.toggle('visible');
-    // });
+    burgerMenu.addEventListener('click', () => {
+      sidebar.classList.toggle('visible');
+    });
 
     // Анимация кнопки микрофона
     let isRecording = false;
