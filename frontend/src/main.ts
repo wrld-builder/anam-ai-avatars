@@ -412,6 +412,45 @@ async function selectChat(name: string) {
 }
 
 /* ==============================
+   Бургер (надёжный)
+   ============================== */
+function onBurgerToggle(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  el.sidebar?.classList.toggle('visible')
+}
+
+window.addEventListener('load', async () => {
+  el.video.setAttribute('playsinline', '')
+  el.video.setAttribute('autoplay', '')
+  el.video.muted = false
+
+  // бинд бургера
+  const burger = document.getElementById('burgerMenu') as HTMLElement | null
+  if (burger) {
+    burger.addEventListener('click', onBurgerToggle, { passive: false })
+    burger.addEventListener('pointerup', onBurgerToggle, { passive: false })
+    burger.addEventListener('touchend', onBurgerToggle, { passive: false })
+    burger.addEventListener('keydown', (ev: KeyboardEvent) => {
+      if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
+    })
+  }
+
+  // бинд кнопки Create Chat
+  const createBtn = document.getElementById('createChatButton') as HTMLButtonElement | null
+  if (createBtn) {
+    createBtn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); createChat() })
+    createBtn.addEventListener('pointerup', (ev) => { ev.preventDefault(); ev.stopPropagation(); createChat() })
+    createBtn.addEventListener('touchend', (ev) => { ev.preventDefault(); ev.stopPropagation(); createChat() })
+  }
+
+  loadChats()
+
+  const saved = localStorage.getItem('currentChat')
+  if (saved) await selectChat(saved)
+})
+
+/* ==============================
    Остальные бинды
    ============================== */
 el.persona.addEventListener('change', async () => {
