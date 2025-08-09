@@ -379,6 +379,7 @@ function addChatItem(name: string) {
   el.chatList.appendChild(li)
 }
 
+/* ← ВОТ ЕЁ И НЕ ХВАТАЛО */
 function createChat() {
   if (!selectedPersona) { alert('Сначала выберите персону.'); return }
   const name = (el.chatName.value || '').trim()
@@ -409,43 +410,29 @@ async function selectChat(name: string) {
 }
 
 /* ==============================
-   Бургер и КНОПКА — биндим при загрузке
+   Бургер — простой и надёжный обработчик
    ============================== */
-function onBurgerToggle(e: Event) {
-  e.preventDefault()
-  e.stopPropagation()
-  el.sidebar?.classList.toggle('visible')
-}
-
-window.addEventListener('load', async () => {
-  el.video.setAttribute('playsinline', '')
-  el.video.setAttribute('autoplay', '')
-  el.video.muted = false
-
-  // надёжный бинд кнопки Create Chat
-  const createBtn = document.getElementById('createChatButton') as HTMLButtonElement | null
-  if (createBtn) {
-    createBtn.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); createChat() }
-    createBtn.onpointerup = (ev) => { ev.preventDefault(); ev.stopPropagation(); createChat() }
-    createBtn.ontouchend = (ev) => { ev.preventDefault(); ev.stopPropagation(); createChat() }
-  }
-
-  // надёжный бинд бургера
-  const burger = document.getElementById('burgerMenu') as HTMLElement | null
-  if (burger) {
-    burger.onclick = onBurgerToggle
-    burger.onpointerup = onBurgerToggle as any
-    burger.ontouchend = onBurgerToggle as any
-  }
-
-  loadChats()
-
-  const saved = localStorage.getItem('currentChat')
-  if (saved) await selectChat(saved)
-})
+// function onBurgerToggle(e: Event) {
+//   e.preventDefault(); e.stopPropagation()
+//   el.sidebar?.classList.toggle('visible')
+// }
+// // Переназначаем слушатели на реальный узел (на случай дубликатов)
+// {
+//   const burgerNode = document.getElementById('burgerMenu')
+//   if (burgerNode && burgerNode.parentNode) {
+//     const clone = burgerNode.cloneNode(true) as HTMLElement
+//     burgerNode.parentNode.replaceChild(clone, burgerNode)
+//     clone.addEventListener('click', onBurgerToggle, { passive: false })
+//     clone.addEventListener('pointerup', onBurgerToggle, { passive: false })
+//     clone.addEventListener('touchend', onBurgerToggle, { passive: false })
+//     clone.addEventListener('keydown', (ev: KeyboardEvent) => {
+//       if (ev.key === 'Enter' || ev.key === ' ') onBurgerToggle(ev)
+//     })
+//   }
+// }
 
 /* ==============================
-   Остальные бинды
+   Wire UI
    ============================== */
 el.persona.addEventListener('change', async () => {
   // только запоминаем выбор, НЕ запускаем сессию
@@ -462,6 +449,7 @@ el.persona.addEventListener('change', async () => {
   el.chatHistory.style.display = 'none'
 })
 
+el.chatCreate.addEventListener('click', createChat)
 el.listenBtn.addEventListener('click', async () => { await toggleRecording() })
 
 el.exportBtn.addEventListener('click', () => {
@@ -474,4 +462,15 @@ el.exportBtn.addEventListener('click', () => {
   a.download = `${name}.json`
   a.click()
   URL.revokeObjectURL(a.href)
+})
+
+window.addEventListener('load', async () => {
+  el.video.setAttribute('playsinline', '')
+  el.video.setAttribute('autoplay', '')
+  el.video.muted = false
+
+  loadChats()
+
+  const saved = localStorage.getItem('currentChat')
+  if (saved) await selectChat(saved)
 })
