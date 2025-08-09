@@ -152,10 +152,14 @@ sudo snap install --classic certbot
 sudo ln -s /snap/bin/certbot /usr/bin/certbot
 ```
 
-# ВНИМАНИЕ: добавляйте www ТОЛЬКО если есть A-запись на www
+ВНИМАНИЕ: добавляйте www ТОЛЬКО если есть A-запись на www
+```
 sudo certbot --nginx -d psychology-machines.ru --agree-tos -m you@example.com --redirect
-# или
-# sudo certbot --nginx -d psychology-machines.ru -d www.psychology-machines.ru --agree-tos -m you@example.com --redirect
+```
+или
+```
+sudo certbot --nginx -d psychology-machines.ru -d www.psychology-machines.ru --agree-tos -m you@example.com --redirect
+```
 Если www не прописан в DNS — не добавляйте его, иначе будет NXDOMAIN.
 
 ## 6) Обновление проекта в проде (команды по шагам)
