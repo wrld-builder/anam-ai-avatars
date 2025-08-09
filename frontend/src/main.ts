@@ -62,8 +62,11 @@ const el = {
 }
 
 /* ==============================
-   Состояние
+   Типы и состояние
    ============================== */
+type ChatMessage = { role: 'user' | 'assistant'; content: string }
+type ChatData = { messages: ChatMessage[] }
+
 let anamClient: AnamClient | null = null
 let selectedPersona = ''       // 'MARIA_MODEL' | 'MARIA_RU_MODEL'
 let currentChat: string | null = null
@@ -71,6 +74,10 @@ let isRecording = false
 let userTranscript = ''
 let currentUserBubble: HTMLDivElement | null = null
 let activeES: EventSource | null = null
+
+// индексы текущих сообщений в storage
+let currentUserMsgIndex: number | null = null
+let currentAssistantMsgIndex: number | null = null
 
 /* ==============================
    ThreadID per chat
@@ -100,6 +107,47 @@ async function ensureThreadForCurrentChat() {
 }
 
 /* ==============================
+   Хранилище чатов
+   ============================== */
+function loadChatData(name: string): ChatData {
+  try {
+    const raw = localStorage.getItem(name)
+    if (!raw) return { messages: [] }
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.messages)) return { messages: [] }
+    return { messages: parsed.messages as ChatMessage[] }
+  } catch { return { messages: [] } }
+}
+
+function saveChatData(name: string, data: ChatData) {
+  try { localStorage.setItem(name, JSON.stringify(data)) } catch {}
+}
+
+function pushMessage(role: 'user'|'assistant', content: string): number {
+  if (!currentChat) return -1
+  const data = loadChatData(currentChat)
+  data.messages.push({ role, content })
+  saveChatData(currentChat, data)
+  return data.messages.length - 1
+}
+
+function updateMessage(index: number, content: string) {
+  if (!currentChat || index == null || index < 0) return
+  const data = loadChatData(currentChat)
+  if (!data.messages[index]) return
+  data.messages[index].content = content
+  saveChatData(currentChat, data)
+}
+
+function removeMessage(index: number) {
+  if (!currentChat || index == null || index < 0) return
+  const data = loadChatData(currentChat)
+  if (!data.messages[index]) return
+  data.messages.splice(index, 1)
+  saveChatData(currentChat, data)
+}
+
+/* ==============================
    Хелперы
    ============================== */
 type AnamSessionTokenResponse = { sessionToken: string; expiresAt?: string }
@@ -111,6 +159,7 @@ async function fetchAnamSessionToken(personaId: string): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: controller.signal,
+    // важно: только personaId + disableBrains (как просили)
     body: JSON.stringify({ personaConfig: { personaId, disableBrains: true } }),
   }).catch((e) => { throw new Error(`ANAM token fetch failed: ${e}`) })
   clearTimeout(to)
@@ -121,9 +170,9 @@ async function fetchAnamSessionToken(personaId: string): Promise<string> {
 }
 
 function personaIdFromModel(model: string) {
-  // EN Maria = ваш существующий persona (например EVA)
+  // EN Maria = существующая персона
   if (model === 'MARIA_MODEL') return EVA_PERSONA_ID
-  // RU Maria = сохранённая русскоязычная персона
+  // RU Maria = сохранённая русская персона
   if (model === 'MARIA_RU_MODEL') return MARIA_RU_PERSONA_ID
   // fallback
   return EVA_PERSONA_ID
@@ -193,6 +242,8 @@ async function initializeAvatarSession() {
     if (last?.role === 'user' && last?.content) {
       userTranscript += (userTranscript ? ' ' : '') + last.content
       currentUserBubble.textContent = userTranscript
+      // сохраняем растущую фразу в storage
+      if (currentUserMsgIndex != null) updateMessage(currentUserMsgIndex, userTranscript)
       el.chatHistory.scrollTop = el.chatHistory.scrollHeight
     }
   })
@@ -204,6 +255,8 @@ async function terminateAvatarSession() {
   try { await anamClient?.stopStreaming?.() } catch {}
   anamClient = null
   isRecording = false
+  currentUserMsgIndex = null
+  currentAssistantMsgIndex = null
   el.listenBtn.classList.remove('active')
   el.listenBtn.style.display = 'none'
   el.spinner.style.display = 'none'
@@ -225,7 +278,10 @@ async function startRecording() {
   anamClient?.unmuteInputAudio()
   isRecording = true
   userTranscript = ''
+
+  // создаём пузырь и «черновик» сообщения в storage
   currentUserBubble = appendBubble('user', '', true)
+  currentUserMsgIndex = pushMessage('user', '')
   el.listenBtn.classList.add('active')
 }
 
@@ -234,12 +290,24 @@ async function stopRecording() {
   isRecording = false
   el.listenBtn.classList.remove('active')
 
-  if (currentUserBubble && userTranscript.trim()) {
+  const finalText = userTranscript.trim()
+
+  if (currentUserBubble) {
     currentUserBubble.removeAttribute('data-streaming')
-    currentUserBubble.textContent = userTranscript.trim()
-    await handleUserTranscript(userTranscript.trim())
+    currentUserBubble.textContent = finalText
   }
+
+  // финализируем/очищаем storage запись
+  if (currentUserMsgIndex != null) {
+    if (finalText) updateMessage(currentUserMsgIndex, finalText)
+    else removeMessage(currentUserMsgIndex)
+  }
+
+  // запускаем ответ только если что-то сказали
+  if (finalText) await handleUserTranscript(finalText)
+
   currentUserBubble = null
+  currentUserMsgIndex = null
 }
 
 async function toggleRecording() {
@@ -264,10 +332,13 @@ async function handleUserTranscript(transcript: string) {
   let buffer = ''
   let rafLock = false
 
+  // создаём «черновик» ассистента в storage
+  currentAssistantMsgIndex = pushMessage('assistant', '')
+
   const existingThreadId = getThreadIdFor(currentChat)
   const params = new URLSearchParams({
     prompt: transcript,
-    model: selectedPersona,                // <-- Важно: 'MARIA_MODEL' или 'MARIA_RU_MODEL'
+    model: selectedPersona,                // 'MARIA_MODEL' | 'MARIA_RU_MODEL'
     ...(existingThreadId ? { thread_id: existingThreadId } : {}),
     t: String(Date.now()),
   })
@@ -293,16 +364,19 @@ async function handleUserTranscript(transcript: string) {
       if (talk?.isActive()) await talk.endMessage()
       bubble.removeAttribute('data-streaming')
       bubble.textContent = buffer.trim()
+      if (currentAssistantMsgIndex != null) updateMessage(currentAssistantMsgIndex, buffer.trim())
+      currentAssistantMsgIndex = null
       return
     }
 
-    // Стримим ассистента в озвучку и в чат
+    // Стримим ассистента в озвучку и в чат + сохраняем прогресс
     if (talk?.isActive()) talk.streamMessageChunk(chunk, false)
     buffer += chunk
     if (!rafLock) {
       rafLock = true
       requestAnimationFrame(() => {
         bubble.textContent = buffer
+        if (currentAssistantMsgIndex != null) updateMessage(currentAssistantMsgIndex, buffer)
         el.chatHistory.scrollTop = el.chatHistory.scrollHeight
         rafLock = false
       })
@@ -314,7 +388,15 @@ async function handleUserTranscript(transcript: string) {
     if (activeES === es) activeES = null
     if (talk?.isActive()) talk.endMessage()
     bubble.removeAttribute('data-streaming')
-    if (!buffer) bubble.textContent = 'Ошибка соединения с моделью. Попробуйте ещё раз.'
+    if (!buffer) {
+      const err = 'Ошибка соединения с моделью. Попробуйте ещё раз.'
+      bubble.textContent = err
+      if (currentAssistantMsgIndex != null) updateMessage(currentAssistantMsgIndex, err)
+    } else if (currentAssistantMsgIndex != null) {
+      // зафиксировать частичный ответ
+      updateMessage(currentAssistantMsgIndex, buffer)
+    }
+    currentAssistantMsgIndex = null
   }
 }
 
@@ -402,8 +484,8 @@ async function selectChat(name: string) {
   localStorage.setItem('currentChat', name)
 
   el.chatHistory.innerHTML = ''
-  const data = JSON.parse(localStorage.getItem(name) || '{"messages":[]}')
-  for (const m of (data.messages || [])) appendBubble(m.role, m.content, false)
+  const data = loadChatData(name)
+  for (const m of data.messages) appendBubble(m.role, m.content, false)
 
   // заранее создаём thread (ускоряет первый ответ)
   await ensureThreadForCurrentChat().catch(() => null)
@@ -414,12 +496,6 @@ async function selectChat(name: string) {
 /* ==============================
    Бургер (надёжный)
    ============================== */
-function onBurgerToggle(e: Event) {
-  e.preventDefault()
-  e.stopPropagation()
-  el.sidebar?.classList.toggle('visible')
-}
-
 window.addEventListener('load', async () => {
   el.video.setAttribute('playsinline', '')
   el.video.setAttribute('autoplay', '')
