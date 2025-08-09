@@ -84,6 +84,21 @@ function setThreadIdFor(chat: string | null, id: string) {
   localStorage.setItem(getThreadKey(chat), id)
 }
 
+/* Предсоздание thread для ускорения первого ответа */
+async function ensureThreadForCurrentChat() {
+  if (!currentChat || !selectedPersona) return getThreadIdFor(currentChat)
+  const existing = getThreadIdFor(currentChat)
+  if (existing) return existing
+  const res = await fetch(`/api/thread/new?model=${encodeURIComponent(selectedPersona)}`, { method: 'POST' })
+  if (!res.ok) return null
+  const j = await res.json().catch(() => ({}))
+  if (j?.thread_id) {
+    setThreadIdFor(currentChat, j.thread_id)
+    return j.thread_id
+  }
+  return null
+}
+
 /* ==============================
    Хелперы
    ============================== */
@@ -238,6 +253,9 @@ async function handleUserTranscript(transcript: string) {
   if (!anamClient) await initializeAvatarSession()
   if (!anamClient) return
 
+  // подстрахуем и предсоздадим тред (если ещё нет)
+  await ensureThreadForCurrentChat().catch(() => null)
+
   const bubble = appendBubble('assistant', '', true)
   const talk = anamClient.createTalkMessageStream?.()
   let buffer = ''
@@ -376,13 +394,16 @@ function createChat() {
   selectChat(name)
 }
 
-function selectChat(name: string) {
+async function selectChat(name: string) {
   currentChat = name
   localStorage.setItem('currentChat', name)
 
   el.chatHistory.innerHTML = ''
   const data = JSON.parse(localStorage.getItem(name) || '{"messages":[]}')
   for (const m of (data.messages || [])) appendBubble(m.role, m.content, false)
+
+  // заранее создаём thread (ускоряет первый ответ)
+  await ensureThreadForCurrentChat().catch(() => null)
 
   initializeAvatarSession().catch(console.error)
 }
@@ -442,7 +463,7 @@ el.exportBtn.addEventListener('click', () => {
   URL.revokeObjectURL(a.href)
 })
 
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   el.video.setAttribute('playsinline', '')
   el.video.setAttribute('autoplay', '')
   el.video.muted = false
@@ -450,5 +471,5 @@ window.addEventListener('load', () => {
   loadChats()
 
   const saved = localStorage.getItem('currentChat')
-  if (saved) selectChat(saved)
+  if (saved) await selectChat(saved)
 })
