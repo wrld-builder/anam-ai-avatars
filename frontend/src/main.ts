@@ -1,8 +1,8 @@
 import { createClient, AnamClient } from '@anam-ai/js-sdk'
-import { EVA_PERSONA_ID, LEO_PERSONA_ID, PABLO_PERSONA_ID } from './lib/constants'
+import { EVA_PERSONA_ID, MARIA_RU_PERSONA_ID } from './lib/constants'
 
 /* ==============================
-   Прокси Anam (как раньше) — НЕ трогаем стили
+   Прокси Anam (как раньше)
    ============================== */
 const ANAM_BASE   = '/anam/api'
 const ANAM_ORIGIN = 'https://api.anam.ai'
@@ -65,7 +65,7 @@ const el = {
    Состояние
    ============================== */
 let anamClient: AnamClient | null = null
-let selectedPersona = ''       // выбранная модель
+let selectedPersona = ''       // 'MARIA_MODEL' | 'MARIA_RU_MODEL'
 let currentChat: string | null = null
 let isRecording = false
 let userTranscript = ''
@@ -121,8 +121,11 @@ async function fetchAnamSessionToken(personaId: string): Promise<string> {
 }
 
 function personaIdFromModel(model: string) {
-  if (model === 'NICK_MODEL') return LEO_PERSONA_ID
-  if (model === 'JOHN_PULSE_MODEL') return PABLO_PERSONA_ID
+  // EN Maria = ваш существующий persona (например EVA)
+  if (model === 'MARIA_MODEL') return EVA_PERSONA_ID
+  // RU Maria = сохранённая русскоязычная персона
+  if (model === 'MARIA_RU_MODEL') return MARIA_RU_PERSONA_ID
+  // fallback
   return EVA_PERSONA_ID
 }
 
@@ -264,7 +267,7 @@ async function handleUserTranscript(transcript: string) {
   const existingThreadId = getThreadIdFor(currentChat)
   const params = new URLSearchParams({
     prompt: transcript,
-    model: selectedPersona,
+    model: selectedPersona,                // <-- Важно: 'MARIA_MODEL' или 'MARIA_RU_MODEL'
     ...(existingThreadId ? { thread_id: existingThreadId } : {}),
     t: String(Date.now()),
   })
@@ -379,7 +382,6 @@ function addChatItem(name: string) {
   el.chatList.appendChild(li)
 }
 
-/* ← ВОТ ЕЁ И НЕ ХВАТАЛО */
 function createChat() {
   if (!selectedPersona) { alert('Сначала выберите персону.'); return }
   const name = (el.chatName.value || '').trim()
@@ -410,7 +412,7 @@ async function selectChat(name: string) {
 }
 
 /* ==============================
-   Wire UI
+   Остальные бинды
    ============================== */
 el.persona.addEventListener('change', async () => {
   // только запоминаем выбор, НЕ запускаем сессию
@@ -427,7 +429,6 @@ el.persona.addEventListener('change', async () => {
   el.chatHistory.style.display = 'none'
 })
 
-el.chatCreate.addEventListener('click', createChat)
 el.listenBtn.addEventListener('click', async () => { await toggleRecording() })
 
 el.exportBtn.addEventListener('click', () => {
@@ -440,15 +441,4 @@ el.exportBtn.addEventListener('click', () => {
   a.download = `${name}.json`
   a.click()
   URL.revokeObjectURL(a.href)
-})
-
-window.addEventListener('load', async () => {
-  el.video.setAttribute('playsinline', '')
-  el.video.setAttribute('autoplay', '')
-  el.video.muted = false
-
-  loadChats()
-
-  const saved = localStorage.getItem('currentChat')
-  if (saved) await selectChat(saved)
 })
